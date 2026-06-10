@@ -1,0 +1,23 @@
+# Build artifacts
+bin/
+dist/
+*.test
+*.out
+*.exe
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Config files
+config.yaml
+.filebrowser-cli.yaml

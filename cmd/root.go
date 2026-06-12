@@ -110,13 +110,7 @@ func loadConfig() (*fbconfig.Config, error) {
 		return nil, err
 	}
 
-	// Parse FileBrowser-specific fields
-	data, err := os.ReadFile(result.SourcePath)
-	if err != nil {
-		return nil, fmt.Errorf("read config file: %w", err)
-	}
-
-	cfg, err := fbconfig.LoadFromBytes(data)
+	cfg, err := fbconfig.LoadFromBytes(result.Data)
 	if err != nil {
 		return nil, err
 	}

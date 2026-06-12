@@ -27,19 +27,15 @@ const tokenFileName = "token.json"
 // getTokenFilePath returns the path to the token file.
 // It uses the same directory as the config file.
 func getTokenFilePath() (string, error) {
-	// Try to get APPDATA on Windows
-	appdata := os.Getenv("APPDATA")
-	if appdata != "" {
-		dir := filepath.Join(appdata, "filebrowser-cli")
-		return filepath.Join(dir, tokenFileName), nil
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", fmt.Errorf("get user config dir: %w", homeErr)
+		}
+		configDir = filepath.Join(home, ".config")
 	}
-
-	// Unix: ~/.config/filebrowser-cli/
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, ".config", "filebrowser-cli", tokenFileName), nil
+	return filepath.Join(configDir, "filebrowser-cli", tokenFileName), nil
 }
 
 // SaveToken saves the authentication token to a file.
@@ -56,8 +52,8 @@ func SaveToken(token string) error {
 	}
 
 	data := TokenData{
-		Token:    token,
-		SavedAt:  time.Now(),
+		Token:   token,
+		SavedAt: time.Now(),
 	}
 
 	jsonData, err := json.MarshalIndent(data, "", "  ")

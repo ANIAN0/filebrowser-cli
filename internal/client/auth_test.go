@@ -115,6 +115,7 @@ func TestAuthClient_Whoami_Success(t *testing.T) {
 	})
 	defer srv.Close()
 
+	c.Token = "eyJhbGciOiJub25lIn0.eyJ1c2VyIjp7InVzZXJuYW1lIjoiYWRtaW4ifX0.signature"
 	a := &AuthClient{C: c}
 	username, err := a.Whoami(context.Background())
 	if err != nil {

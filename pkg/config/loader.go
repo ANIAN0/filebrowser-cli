@@ -17,13 +17,16 @@ type FS interface {
 // osFS implements FS using the real file system.
 type osFS struct{}
 
-func (osFS) ReadFile(p string) ([]byte, error) { return os.ReadFile(p) }
+func (osFS) ReadFile(p string) ([]byte, error)  { return os.ReadFile(p) }
 func (osFS) Stat(p string) (os.FileInfo, error) { return os.Stat(p) }
 
 // LoadResult contains the result of loading a config file.
 type LoadResult struct {
 	// Config is the parsed configuration.
 	Config *Config
+
+	// Data is the interpolated YAML content that was parsed.
+	Data []byte
 
 	// SourcePath is the path to the config file that was loaded.
 	SourcePath string
@@ -41,7 +44,7 @@ type LoadResult struct {
 // The function NEVER reads skillconfig.json (DECIDE-011).
 //
 // Parameters:
-//   - cliName: CLI name (e.g., "filebrowser-cli", "memos-cli")
+//   - cliName: CLI name (e.g., "filebrowser-cli")
 //   - args: command line arguments (to extract --config flag)
 //   - env: environment variables (map takes precedence over os env)
 //   - binaryPath: path to the binary (from os.Executable())
@@ -79,31 +82,14 @@ func LoadConfig(cliName string, args []string, env map[string]string, binaryPath
 	}
 
 	// 3) + 4) Resolver
-	mode, candidates := Resolve(binaryPath)
-	for _, p := range candidates {
-		// In global mode, only try user config paths
-		if mode == ModeGlobal && !isUserConfigPath(p) {
-			continue
-		}
-
-		// Skip user config paths in project mode - try them last
-		if mode == ModeProject && isUserConfigPath(p) {
-			continue
-		}
-
+	mode, candidates := Resolve(cliName, binaryPath)
+	for i, p := range candidates {
 		if data, err := fs.ReadFile(p); err == nil {
-			return parseConfig(data, p, mode)
-		}
-	}
-
-	// In project mode, try user config paths as fallback
-	if mode == ModeProject {
-		for _, p := range candidates {
-			if isUserConfigPath(p) {
-				if data, err := fs.ReadFile(p); err == nil {
-					return parseConfig(data, p, "global")
-				}
+			resultMode := mode
+			if mode == ModeProject && i == len(candidates)-1 {
+				resultMode = ModeGlobal
 			}
+			return parseConfig(data, p, resultMode)
 		}
 	}
 
@@ -158,23 +144,5 @@ func parseConfig(data []byte, path, mode string) (*LoadResult, error) {
 		return nil, fmt.Errorf("unsupported config schema version %d in %q (expected %d)", cfg.Version, path, Version1)
 	}
 
-	return &LoadResult{Config: cfg, SourcePath: path, Mode: mode}, nil
-}
-
-// isUserConfigPath checks if a path is a user config path.
-// User config paths are in ~/.config/<cli>/ or %APPDATA%\<cli>\
-func isUserConfigPath(p string) bool {
-	lower := strings.ToLower(p)
-	// Check for .config/<cli> pattern (Unix)
-	if strings.Contains(lower, ".config/filebrowser-cli") || strings.Contains(lower, ".config/memos-cli") {
-		return true
-	}
-	// Check for APPDATA\<cli> pattern (Windows)
-	if strings.Contains(lower, "appdata/filebrowser-cli") || strings.Contains(lower, "appdata/memos-cli") {
-		return true
-	}
-	if strings.Contains(lower, "appdata\\filebrowser-cli") || strings.Contains(lower, "appdata\\memos-cli") {
-		return true
-	}
-	return false
+	return &LoadResult{Config: cfg, Data: []byte(interpolated), SourcePath: path, Mode: mode}, nil
 }

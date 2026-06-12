@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -221,6 +223,80 @@ func TestLoadConfig_EnvInterpolation(t *testing.T) {
 	// But the interpolation should have succeeded
 	if result.Config == nil {
 		t.Error("expected non-nil Config")
+	}
+	if !strings.Contains(string(result.Data), "password: secret123") {
+		t.Fatalf("expected interpolated config data, got %q", string(result.Data))
+	}
+}
+
+func TestLoadConfig_GlobalWindowsAppDataRoaming(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific APPDATA discovery test")
+	}
+
+	configContent := []byte("version: 1\n")
+	tmpDir := t.TempDir()
+	gopath := filepath.Join(tmpDir, "go")
+	binDir := filepath.Join(gopath, "bin")
+	appData := filepath.Join(tmpDir, "AppData", "Roaming")
+	configPath := filepath.Join(appData, "filebrowser-cli", "config.yaml")
+
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, configContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOPATH", gopath)
+	t.Setenv("APPDATA", appData)
+
+	result, err := LoadConfig("filebrowser-cli", nil, nil, filepath.Join(binDir, "filebrowser-cli.exe"), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.SourcePath != configPath {
+		t.Fatalf("expected SourcePath %q, got %q", configPath, result.SourcePath)
+	}
+	if result.Mode != ModeGlobal {
+		t.Fatalf("expected Mode %q, got %q", ModeGlobal, result.Mode)
+	}
+}
+
+func TestLoadConfig_DoesNotReadMemosUserConfig(t *testing.T) {
+	configContent := []byte("version: 1\n")
+	tmpDir := t.TempDir()
+	gopath := filepath.Join(tmpDir, "go")
+	binDir := filepath.Join(gopath, "bin")
+	configRoot := filepath.Join(tmpDir, "config")
+	memosConfigPath := filepath.Join(configRoot, "memos-cli", "config.yaml")
+
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(memosConfigPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memosConfigPath, configContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOPATH", gopath)
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", configRoot)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", configRoot)
+	}
+
+	_, err := LoadConfig("filebrowser-cli", nil, nil, filepath.Join(binDir, "filebrowser-cli"), nil)
+	if err == nil {
+		t.Fatal("expected error when only memos-cli config exists")
+	}
+	if strings.Contains(err.Error(), "memos-cli") {
+		t.Fatalf("filebrowser-cli loader should not try memos-cli paths: %v", err)
 	}
 }
 

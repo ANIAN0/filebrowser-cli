@@ -1,4 +1,4 @@
-// Package config provides shared config loading for both CLIs.
+// Package config provides shared config loading.
 //
 // Config loading follows a 4-layer priority:
 // 1) --config flag value

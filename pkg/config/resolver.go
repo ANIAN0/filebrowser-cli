@@ -43,7 +43,7 @@ func userBinPaths() []string {
 	}
 
 	if home != "" {
-		paths = append(paths, filepath.Join(home, "go", "bin"))   // Default GOPATH
+		paths = append(paths, filepath.Join(home, "go", "bin"))     // Default GOPATH
 		paths = append(paths, filepath.Join(home, ".local", "bin")) // XDG user bin
 		paths = append(paths, filepath.Join(home, "bin"))           // Common user bin
 	}
@@ -59,7 +59,7 @@ func userBinPaths() []string {
 // Returns:
 //   - mode: ModeGlobal or ModeProject
 //   - candidates: ordered list of config file paths to try
-func Resolve(binaryPath string) (mode string, candidates []string) {
+func Resolve(cliName, binaryPath string) (mode string, candidates []string) {
 	abs, err := filepath.Abs(binaryPath)
 	if err != nil {
 		abs = binaryPath
@@ -77,7 +77,7 @@ func Resolve(binaryPath string) (mode string, candidates []string) {
 	for _, ub := range userBinPaths() {
 		if normalizePath(ub) == normalizedBinDir {
 			mode = ModeGlobal
-			candidates = userConfigPaths()
+			candidates = []string{userConfigPath(cliName)}
 			return
 		}
 	}
@@ -90,30 +90,19 @@ func Resolve(binaryPath string) (mode string, candidates []string) {
 	candidates = append(candidates, filepath.Join(binDir, "..", "config.yaml"))
 
 	// Fallback to user dir
-	candidates = append(candidates, userConfigPaths()...)
+	candidates = append(candidates, userConfigPath(cliName))
 
 	return
 }
 
-// userConfigPaths returns the user config directory paths for both CLIs.
-func userConfigPaths() []string {
-	var paths []string
-	home, _ := os.UserHomeDir()
-
-	if runtime.GOOS == "windows" {
-		appdata := os.Getenv("APPDATA")
-		if appdata != "" {
-			paths = append(paths, filepath.Join(appdata, "filebrowser-cli", "config.yaml"))
-			paths = append(paths, filepath.Join(appdata, "memos-cli", "config.yaml"))
-		}
-	} else {
-		if home != "" {
-			paths = append(paths, filepath.Join(home, ".config", "filebrowser-cli", "config.yaml"))
-			paths = append(paths, filepath.Join(home, ".config", "memos-cli", "config.yaml"))
-		}
+// userConfigPath returns the per-CLI user config file path.
+func userConfigPath(cliName string) string {
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		home, _ := os.UserHomeDir()
+		configDir = filepath.Join(home, ".config")
 	}
-
-	return paths
+	return filepath.Join(configDir, cliName, "config.yaml")
 }
 
 // normalizePath normalizes a path for comparison.

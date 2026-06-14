@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -107,7 +108,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if c.Verbose {
-				fmt.Printf("Retry %d/%d after %v backoff\n", attempt, c.MaxRetries, backoff)
+				fmt.Fprintf(os.Stderr, "Retry %d/%d after %v backoff\n", attempt, c.MaxRetries, backoff)
 			}
 			select {
 			case <-ctx.Done():
@@ -121,7 +122,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 			lastErr = err
 			if isNetworkError(err) && attempt < c.MaxRetries {
 				if c.Verbose {
-					fmt.Printf("Network error (attempt %d/%d): %v\n", attempt+1, c.MaxRetries, err)
+					fmt.Fprintf(os.Stderr, "Network error (attempt %d/%d): %v\n", attempt+1, c.MaxRetries, err)
 				}
 				continue
 			}
@@ -137,7 +138,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 		resp.Body.Close()
 		if c.Verbose {
-			fmt.Printf("Server error %d (attempt %d/%d)\n", resp.StatusCode, attempt+1, c.MaxRetries)
+			fmt.Fprintf(os.Stderr, "Server error %d (attempt %d/%d)\n", resp.StatusCode, attempt+1, c.MaxRetries)
 		}
 	}
 

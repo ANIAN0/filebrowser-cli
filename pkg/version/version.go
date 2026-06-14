@@ -1,9 +1,9 @@
 // Package version provides build-time version information.
 // Values are injected via -ldflags at build time:
 //
-//	go build -ldflags "-X cli/shared/version.Version=v1.0.0 \
-//	                  -X cli/shared/version.Commit=$(git rev-parse HEAD) \
-//	                  -X cli/shared/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+//	go build -ldflags "-X github.com/ANIAN0/filebrowser-cli/pkg/version.Version=v1.0.0 \
+//	                  -X github.com/ANIAN0/filebrowser-cli/pkg/version.Commit=$(git rev-parse HEAD) \
+//	                  -X github.com/ANIAN0/filebrowser-cli/pkg/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 package version
 
 import "fmt"

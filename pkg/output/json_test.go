@@ -134,14 +134,18 @@ func TestPrintObjectJSON(t *testing.T) {
 
 func TestPrintErrorJSON(t *testing.T) {
 	var buf bytes.Buffer
-	o := NewWithWriters(ModeJSON, &buf, &buf)
+	var errBuf bytes.Buffer
+	o := NewWithWriters(ModeJSON, &buf, &errBuf)
 
 	err := o.PrintErrorJSON("test error", ExitClientError)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	if buf.String() != "" {
+		t.Fatalf("PrintErrorJSON wrote to stdout: %s", buf.String())
+	}
+	output := errBuf.String()
 	var result struct {
 		Code  int    `json:"code"`
 		Error string `json:"error"`

@@ -50,6 +50,6 @@ func (o *Output) PrintErrorJSON(msg string, code int) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(o.W, string(b))
+	fmt.Fprintln(o.ErrW, string(b))
 	return nil
 }

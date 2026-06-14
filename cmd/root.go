@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -51,10 +57,51 @@ var rootCmd = &cobra.Command{
 // Execute runs the root command and returns the exit code.
 func Execute() int {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return output.ExitClientError
+		code := classifyExitCode(err)
+		mode := output.ModeText
+		if jsonMode {
+			mode = output.ModeJSON
+		}
+		_ = output.New(mode).PrintError(err, code)
+		return code
 	}
 	return output.ExitSuccess
+}
+
+var httpStatusPattern = regexp.MustCompile(`HTTP ([0-9]{3})`)
+
+func classifyExitCode(err error) int {
+	if err == nil {
+		return output.ExitSuccess
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return output.ExitNetwork
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return output.ExitNetwork
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "load config:") ||
+		strings.Contains(msg, "config") ||
+		strings.Contains(msg, "env var(s) not set") {
+		return output.ExitConfig
+	}
+
+	if match := httpStatusPattern.FindStringSubmatch(msg); len(match) == 2 {
+		status, convErr := strconv.Atoi(match[1])
+		if convErr == nil {
+			if status >= 500 && status < 600 {
+				return output.ExitServerError
+			}
+			return output.ExitClientError
+		}
+	}
+
+	return output.ExitClientError
 }
 
 func init() {

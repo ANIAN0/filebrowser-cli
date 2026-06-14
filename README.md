@@ -60,6 +60,37 @@ go install github.com/ANIAN0/filebrowser-cli@latest
 make install
 ```
 
+### Release 二进制自管理
+
+从 GitHub Release 下载的二进制不需要 Go 环境即可安装、更新和卸载：
+
+```bash
+# 安装当前二进制到默认用户 bin 目录
+filebrowser-cli install
+
+# 安装到指定目录
+filebrowser-cli install --dir /path/to/bin
+
+# 从最新 GitHub Release 更新当前二进制
+filebrowser-cli update
+
+# 即使当前版本相同也强制重新下载
+filebrowser-cli update --force
+
+# 卸载二进制，默认保留用户配置
+filebrowser-cli uninstall
+
+# 卸载二进制并删除用户配置目录
+filebrowser-cli uninstall --purge
+```
+
+默认安装目录：
+
+- Linux/macOS: `~/.local/bin`
+- Windows: `%LOCALAPPDATA%\Programs\filebrowser-cli`
+
+如果安装目录不在 `PATH` 中，`install` 会输出提示。
+
 ## 配置
 
 ### 配置文件位置（按优先级）
@@ -150,6 +181,24 @@ export FB_PASSWORD="your-password"
 | `--no-color` | 禁用颜色输出 |
 | `--version` | 输出版本信息 |
 | `--help, -h` | 显示帮助 |
+
+### 生命周期命令
+
+| 命令 | 说明 |
+|------|------|
+| `install [--dir <path>]` | 将当前二进制安装到用户 bin 目录 |
+| `update [--force]` | 从最新 GitHub Release 下载并替换当前二进制 |
+| `uninstall [--dir <path>] [--purge]` | 删除已安装二进制；`--purge` 同时删除用户配置 |
+
+### 配置与补全
+
+| 命令 | 说明 |
+|------|------|
+| `config path` | 显示配置搜索路径 |
+| `config init [--path <path>] [--force]` | 创建示例配置文件 |
+| `config validate` | 验证当前配置 |
+| `config show [--redact=false]` | 显示当前配置，默认隐藏敏感字段 |
+| `completion bash\|zsh\|fish\|powershell` | 生成 shell completion 脚本 |
 
 ## 退出码约定
 

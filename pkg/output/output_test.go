@@ -133,7 +133,8 @@ func TestPrintError_Text(t *testing.T) {
 
 func TestPrintError_JSON(t *testing.T) {
 	var buf bytes.Buffer
-	o := NewWithWriters(ModeJSON, &buf, &buf)
+	var errBuf bytes.Buffer
+	o := NewWithWriters(ModeJSON, &buf, &errBuf)
 
 	err := errors.New("test error")
 	err = o.PrintError(err, ExitClientError)
@@ -141,7 +142,10 @@ func TestPrintError_JSON(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	if buf.String() != "" {
+		t.Fatalf("PrintError wrote to stdout: %s", buf.String())
+	}
+	output := errBuf.String()
 	if output == "" {
 		t.Error("output should not be empty")
 	}

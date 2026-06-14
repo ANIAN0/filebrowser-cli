@@ -23,7 +23,22 @@ jobs:
           go-version: '1.21'
 
       - name: Build all platforms
-        run: make build-all
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/ANIAN0/filebrowser-cli/pkg/version.Version=${VERSION} -X github.com/ANIAN0/filebrowser-cli/pkg/version.Commit=${COMMIT} -X github.com/ANIAN0/filebrowser-cli/pkg/version.BuildTime=${BUILD_TIME}"
+          mkdir -p dist
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              ext=$([ "$os" = "windows" ] && echo .exe || echo "")
+              echo "Building filebrowser-cli-${os}-${arch}${ext}..."
+              GOOS=$os GOARCH=$arch go build -ldflags "$LDFLAGS" -o "dist/filebrowser-cli-${os}-${arch}${ext}" .
+            done
+          done
+          cd dist
+          sha256sum * > checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

@@ -6,6 +6,10 @@ BIN_DIR := bin
 DIST_DIR := dist
 GO ?= go
 GOBIN_PATH := $(shell $(GO) env GOPATH)/bin
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+LDFLAGS := -s -w -X github.com/ANIAN0/filebrowser-cli/pkg/version.Version=$(VERSION) -X github.com/ANIAN0/filebrowser-cli/pkg/version.Commit=$(COMMIT) -X github.com/ANIAN0/filebrowser-cli/pkg/version.BuildTime=$(BUILD_TIME)
 
 .PHONY: build install uninstall test build-all clean help
 
@@ -28,7 +32,7 @@ help:
 build:
 	@echo "Building $(CLI_NAME)..."
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_DIR)/$(CLI_NAME) .
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(CLI_NAME) .
 	@echo "Build complete: $(BIN_DIR)/$(CLI_NAME)"
 
 ## install: 安装到 GOPATH/bin
@@ -67,10 +71,11 @@ build-all:
 		for arch in amd64 arm64; do \
 			ext=$$( [ "$$os" = "windows" ] && echo .exe || echo "" ); \
 			echo "  Building $(CLI_NAME)-$$os-$$arch$$ext..."; \
-			GOOS=$$os GOARCH=$$arch $(GO) build \
+			GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS)" \
 				-o $(DIST_DIR)/$(CLI_NAME)-$$os-$$arch$$ext . || exit 1; \
 		done; \
 	done
+	@cd $(DIST_DIR) && sha256sum * > checksums.txt
 	@echo "Cross-compilation complete: $(DIST_DIR)/"
 	@ls -la $(DIST_DIR)/
 

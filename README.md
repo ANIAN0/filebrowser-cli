@@ -38,6 +38,22 @@ filebrowser-cli/
 └── README.md
 ```
 
+## Windows Git Bash 兼容性
+
+在 Git Bash / MSYS2 环境下运行时，shell 会在将参数传给程序之前自动把 POSIX 路径（如 `/`、`/foo`）转换为 Windows 路径（如 `C:/Program Files/Git/`）。这会导致远程服务器路径被错误解析。
+
+filebrowser-cli 会在 Windows + MSYS 环境下自动检测并反转这种路径转换，使 `filebrowser-cli ls /` 在 Git Bash 中也能正确列出服务器根目录。
+
+如需彻底避免转换，可在 shell 中设置环境变量：
+
+```bash
+# Git Bash / MSYS2 — 禁止所有路径转换
+export MSYS_NO_PATHCONV=1
+
+# 或者仅排除 filebrowser-cli 的参数
+export MSYS2_ARG_CONV_EXCL="*"
+```
+
 ## 安装
 
 ### 从源码安装
@@ -134,6 +150,15 @@ export FB_PASSWORD="your-password"
 | `login` | 登录并获取 token |
 | `renew` | 续期 token |
 | `whoami` | 显示当前用户信息 |
+
+**Token 自动续期**：JWT token 具有过期时间（通常 2 小时）。当 token 过期后，如果配置文件中设置了 `username` 和 `password`，工具会自动使用凭据重新登录，无需手动干预。若未配置凭据，则会提示运行 `filebrowser-cli login`。
+
+```
+# config.yaml 中配置凭据即可启用自动重登录
+instance_url: "http://localhost:8080"
+username: "admin"
+password: "${FB_PASSWORD}"  # 支持环境变量
+```
 
 ### 资源管理（Resource）
 

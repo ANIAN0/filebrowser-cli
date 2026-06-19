@@ -34,6 +34,7 @@ type createShareRequest struct {
 
 // Create creates a new share for the given path.
 func (s *ShareClient) Create(ctx context.Context, path, expires, unit, password string) (*Share, error) {
+	path = normalizeRemotePath(path)
 	body, err := json.Marshal(createShareRequest{
 		Expires:  expires,
 		Unit:     unit,
@@ -100,6 +101,7 @@ func (s *ShareClient) Delete(ctx context.Context, hash string) error {
 
 // Info returns shares for a specific path.
 func (s *ShareClient) Info(ctx context.Context, path string) ([]Share, error) {
+	path = normalizeRemotePath(path)
 	resp, err := s.C.Get(ctx, "/api/share"+path)
 	if err != nil {
 		return nil, fmt.Errorf("info request: %w", err)

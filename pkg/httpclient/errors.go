@@ -3,11 +3,11 @@ package httpclient
 
 // Exit codes for different error types.
 const (
-	ExitSuccess      = 0
-	ExitClientError  = 1
-	ExitServerError  = 2
-	ExitNetwork      = 3
-	ExitConfigError  = 4
+	ExitSuccess     = 0
+	ExitClientError = 1
+	ExitServerError = 2
+	ExitNetwork     = 3
+	ExitConfigError = 4
 )
 
 // MapHTTPStatusToExitCode maps HTTP status codes to CLI exit codes.

@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ANIAN0/filebrowser-cli/internal/client"
-	"github.com/ANIAN0/filebrowser-cli/pkg/httpclient"
 	"github.com/ANIAN0/filebrowser-cli/pkg/output"
 )
 
@@ -29,11 +28,10 @@ var shareCreateCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		c := httpclient.New(cfg.InstanceURL,
-			httpclient.WithTimeout(getTimeout()),
-			httpclient.WithVerbose(verbose),
-			httpclient.WithToken(loadToken()),
-		)
+		c, err := newAuthedClient(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
 
 		sc := &client.ShareClient{C: c}
 		sh, err := sc.Create(cmd.Context(), path, shareExpires, shareUnit, sharePassword)
@@ -65,11 +63,10 @@ var shareListCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		c := httpclient.New(cfg.InstanceURL,
-			httpclient.WithTimeout(getTimeout()),
-			httpclient.WithVerbose(verbose),
-			httpclient.WithToken(loadToken()),
-		)
+		c, err := newAuthedClient(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
 
 		sc := &client.ShareClient{C: c}
 		shares, err := sc.List(cmd.Context())
@@ -112,11 +109,10 @@ var shareDeleteCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		c := httpclient.New(cfg.InstanceURL,
-			httpclient.WithTimeout(getTimeout()),
-			httpclient.WithVerbose(verbose),
-			httpclient.WithToken(loadToken()),
-		)
+		c, err := newAuthedClient(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
 
 		sc := &client.ShareClient{C: c}
 		return sc.Delete(cmd.Context(), hash)
@@ -136,11 +132,10 @@ var shareInfoCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		c := httpclient.New(cfg.InstanceURL,
-			httpclient.WithTimeout(getTimeout()),
-			httpclient.WithVerbose(verbose),
-			httpclient.WithToken(loadToken()),
-		)
+		c, err := newAuthedClient(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
 
 		sc := &client.ShareClient{C: c}
 		shares, err := sc.Info(cmd.Context(), path)

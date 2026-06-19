@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ANIAN0/filebrowser-cli/internal/client"
-	"github.com/ANIAN0/filebrowser-cli/pkg/httpclient"
 	"github.com/ANIAN0/filebrowser-cli/pkg/output"
 )
 
@@ -26,11 +25,10 @@ var searchCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		c := httpclient.New(cfg.InstanceURL,
-			httpclient.WithTimeout(getTimeout()),
-			httpclient.WithVerbose(verbose),
-			httpclient.WithToken(loadToken()),
-		)
+		c, err := newAuthedClient(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
 
 		sc := &client.SearchClient{C: c}
 		results, err := sc.Search(cmd.Context(), path, query, searchLimit)

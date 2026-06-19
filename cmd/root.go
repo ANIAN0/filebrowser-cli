@@ -13,8 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ANIAN0/filebrowser-cli/internal/client"
 	fbconfig "github.com/ANIAN0/filebrowser-cli/internal/config"
 	sharedconfig "github.com/ANIAN0/filebrowser-cli/pkg/config"
+	"github.com/ANIAN0/filebrowser-cli/pkg/httpclient"
 	"github.com/ANIAN0/filebrowser-cli/pkg/output"
 	"github.com/ANIAN0/filebrowser-cli/pkg/version"
 )
@@ -121,10 +123,65 @@ func getTimeout() time.Duration {
 	return time.Duration(timeoutSec) * time.Second
 }
 
-// loadToken loads the saved authentication token.
+// loadToken loads the saved authentication token WITHOUT an expiry check.
+// It is used by `renew`, whose semantics require sending the on-disk token to
+// the server so the server (the authority on validity) can refresh it.
+//
+// For normal authenticated commands, prefer newAuthedClient, which transparently
+// handles token expiry and auto re-login.
 func loadToken() string {
-	token, _ := fbconfig.LoadToken()
+	token, _ := fbconfig.LoadRawToken()
 	return token
+}
+
+// newAuthedClient builds an HTTP client carrying a usable auth token.
+//
+// If a valid (non-expired) token is on disk it is used directly. If the token
+// has expired (or there is none) and the config carries username/password
+// credentials, it logs in again transparently, persists the new token, and
+// returns a client carrying it. If credentials are missing it returns an error
+// directing the user to run `filebrowser-cli login`.
+//
+// This eliminates the "token expired -> HTTP 401" failure mode reported in the
+// token-expiry bug, while degrading gracefully when auto re-login isn't possible.
+func newAuthedClient(ctx context.Context, cfg *fbconfig.Config) (*httpclient.Client, error) {
+	httpc := httpclient.New(cfg.InstanceURL,
+		httpclient.WithTimeout(getTimeout()),
+		httpclient.WithVerbose(verbose),
+	)
+
+	token, err := fbconfig.LoadToken()
+	if err != nil && !errors.Is(err, fbconfig.ErrTokenExpired) {
+		return nil, fmt.Errorf("load token: %w", err)
+	}
+
+	if token != "" {
+		httpc.Token = token
+		return httpc, nil
+	}
+
+	// Token missing or expired -> attempt auto re-login with configured creds.
+	if cfg.Username == "" || cfg.Password == "" {
+		return nil, fmt.Errorf("not logged in or token expired; run `filebrowser-cli login` (or set username/password in config for automatic re-login)")
+	}
+
+	if verbose {
+		fmt.Fprintln(os.Stderr, "token expired or missing, logging in...")
+	}
+
+	ac := &client.AuthClient{C: httpc}
+	newToken, lerr := ac.Login(ctx, cfg.Username, cfg.Password)
+	if lerr != nil {
+		return nil, fmt.Errorf("auto re-login: %w", lerr)
+	}
+
+	if serr := fbconfig.SaveToken(newToken); serr != nil {
+		// Non-fatal: the in-memory token is still set below.
+		fmt.Fprintf(os.Stderr, "warn: failed to save refreshed token: %v\n", serr)
+	}
+
+	httpc.Token = newToken
+	return httpc, nil
 }
 
 // loadConfig loads the configuration from file.

@@ -41,6 +41,7 @@ func (r *ResourceClient) List(ctx context.Context, path string) (*Resource, erro
 	if path == "" {
 		path = "/"
 	}
+	path = normalizeRemotePath(path)
 	resp, err := r.C.Get(ctx, "/api/resources"+path)
 	if err != nil {
 		return nil, fmt.Errorf("list request: %w", err)
@@ -63,6 +64,7 @@ func (r *ResourceClient) Info(ctx context.Context, path string) (*Resource, erro
 	if path == "" {
 		path = "/"
 	}
+	path = normalizeRemotePath(path)
 	resp, err := r.C.Get(ctx, "/api/resources"+path+"?checksum=sha256")
 	if err != nil {
 		return nil, fmt.Errorf("info request: %w", err)
@@ -82,6 +84,8 @@ func (r *ResourceClient) Info(ctx context.Context, path string) (*Resource, erro
 
 // Upload uploads a local file to the remote path.
 func (r *ResourceClient) Upload(ctx context.Context, localPath, remotePath string, override bool) error {
+	// localPath is a filesystem path and MUST NOT be normalized.
+	remotePath = normalizeRemotePath(remotePath)
 	f, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open local file: %w", err)
@@ -113,6 +117,8 @@ func (r *ResourceClient) Upload(ctx context.Context, localPath, remotePath strin
 
 // Download downloads a remote file to a local path.
 func (r *ResourceClient) Download(ctx context.Context, remotePath, localPath string) error {
+	// localPath is a filesystem path and MUST NOT be normalized.
+	remotePath = normalizeRemotePath(remotePath)
 	if localPath == "" {
 		localPath = filepath.Base(remotePath)
 	}
@@ -146,6 +152,7 @@ func (r *ResourceClient) Download(ctx context.Context, remotePath, localPath str
 
 // Mkdir creates a directory at the remote path.
 func (r *ResourceClient) Mkdir(ctx context.Context, path string) error {
+	path = normalizeRemotePath(path)
 	if !strings.HasSuffix(path, "/") {
 		path += "/"
 	}
@@ -163,6 +170,7 @@ func (r *ResourceClient) Mkdir(ctx context.Context, path string) error {
 
 // Remove deletes a resource at the remote path.
 func (r *ResourceClient) Remove(ctx context.Context, path string) error {
+	path = normalizeRemotePath(path)
 	req, err := http.NewRequestWithContext(ctx, "DELETE", r.C.BaseURL+"/api/resources"+path, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -182,6 +190,8 @@ func (r *ResourceClient) Remove(ctx context.Context, path string) error {
 
 // Move moves or renames a resource.
 func (r *ResourceClient) Move(ctx context.Context, src, dst string) error {
+	src = normalizeRemotePath(src)
+	dst = normalizeRemotePath(dst)
 	u := fmt.Sprintf("/api/resources%s?action=rename&destination=%s", src, url.QueryEscape(dst))
 	req, err := http.NewRequestWithContext(ctx, "PATCH", r.C.BaseURL+u, nil)
 	if err != nil {
@@ -202,6 +212,8 @@ func (r *ResourceClient) Move(ctx context.Context, src, dst string) error {
 
 // Copy copies a resource.
 func (r *ResourceClient) Copy(ctx context.Context, src, dst string) error {
+	src = normalizeRemotePath(src)
+	dst = normalizeRemotePath(dst)
 	u := fmt.Sprintf("/api/resources%s?action=copy&destination=%s", src, url.QueryEscape(dst))
 	req, err := http.NewRequestWithContext(ctx, "PATCH", r.C.BaseURL+u, nil)
 	if err != nil {
@@ -223,6 +235,7 @@ func (r *ResourceClient) Copy(ctx context.Context, src, dst string) error {
 // Preview returns an image preview of a resource.
 // size must be "thumb" (256x256) or "big" (1080x1080).
 func (r *ResourceClient) Preview(ctx context.Context, path, size string) ([]byte, error) {
+	path = normalizeRemotePath(path)
 	if size != "thumb" && size != "big" {
 		return nil, fmt.Errorf("size must be 'thumb' or 'big', got %q", size)
 	}

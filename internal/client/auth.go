@@ -26,9 +26,9 @@ type LoginRequest struct {
 
 // User represents a FileBrowser user.
 type User struct {
-	ID       int    `json:"id"`
-	Username string `json:"username"`
-	Password string `json:"password,omitempty"`
+	ID       int      `json:"id"`
+	Username string   `json:"username"`
+	Password string   `json:"password,omitempty"`
 	Scopes   []string `json:"scopes,omitempty"`
 }
 

@@ -26,6 +26,7 @@ func (s *SearchClient) Search(ctx context.Context, path, query string, limit int
 	if path == "" {
 		path = "/"
 	}
+	path = normalizeRemotePath(path)
 
 	u := fmt.Sprintf("/api/search%s?query=%s", path, url.QueryEscape(query))
 	resp, err := s.C.Get(ctx, u)

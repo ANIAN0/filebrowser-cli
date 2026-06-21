@@ -2,8 +2,10 @@ package httpclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,6 +89,168 @@ func TestGet_401(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestDo_401_RefreshRetriesOnce covers the regression target: when the server
+// returns 401, OnAuthFailure is invoked, the new token is installed, and the
+// request is retried exactly once — and that retry carries the new token in
+// the auth header.
+func TestDo_401_RefreshRetriesOnce(t *testing.T) {
+	var (
+		hits     int32
+		gotToken string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&hits, 1)
+		gotToken = r.Header.Get("X-Auth")
+		if n == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	c := New(server.URL,
+		WithToken("old-token"),
+		WithAuthFailure(func() (string, error) {
+			return "new-token", nil
+		}),
+	)
+
+	resp, err := c.Get(context.Background(), "/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Errorf("hits = %d, want 2 (one 401 + one retry)", got)
+	}
+	if gotToken != "new-token" {
+		t.Errorf("auth header on retry = %q, want %q", gotToken, "new-token")
+	}
+	if c.Token != "new-token" {
+		t.Errorf("c.Token after refresh = %q, want %q", c.Token, "new-token")
+	}
+}
+
+// TestDo_401_RefreshFailureSurfacesError: when OnAuthFailure itself fails,
+// Do returns a wrapped error and stops — it does NOT silently retry with
+// whatever stale token was on hand.
+func TestDo_401_RefreshFailureSurfacesError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	refreshErr := errors.New("creds missing")
+	c := New(server.URL,
+		WithToken("any"),
+		WithAuthFailure(func() (string, error) {
+			return "", refreshErr
+		}),
+	)
+
+	_, err := c.Get(context.Background(), "/test")
+	if err == nil {
+		t.Fatal("want error when auth refresh fails, got nil")
+	}
+	if !errors.Is(err, refreshErr) {
+		t.Errorf("err = %v, want wraps %v", err, refreshErr)
+	}
+	if !strings.Contains(err.Error(), "auth refresh") {
+		t.Errorf("err = %q, want prefix \"auth refresh\"", err.Error())
+	}
+}
+
+// TestDo_401_RefreshOnlyOnce: even if the second attempt also returns 401,
+// OnAuthFailure is invoked at most once per Do() call. This caps the cost
+// of a misconfigured refresh hook.
+func TestDo_401_RefreshOnlyOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	var refreshHits int32
+	c := New(server.URL,
+		WithToken("any"),
+		WithAuthFailure(func() (string, error) {
+			atomic.AddInt32(&refreshHits, 1)
+			return "still-rejected", nil
+		}),
+	)
+
+	resp, err := c.Get(context.Background(), "/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode = %d, want 401 (final response after one refresh)", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&refreshHits); got != 1 {
+		t.Errorf("refresh hits = %d, want 1 (capped)", got)
+	}
+}
+
+// TestDo_401_NoCallback_Leaves401Untouched pins backward compatibility: when
+// OnAuthFailure is nil, 401 is returned to the caller exactly as before the
+// new feature was added.
+func TestDo_401_NoCallback_Leaves401Untouched(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	c := New(server.URL, WithToken("any"))
+	resp, err := c.Get(context.Background(), "/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode = %d, want 401 (no callback = no auto-retry)", resp.StatusCode)
+	}
+}
+
+// TestDo_401_RefreshSkipsBackoff: the auth refresh path must NOT wait through
+// the exponential backoff the 5xx retry path uses. Token rejection -> refresh
+// -> retry should feel instant, not delayed.
+func TestDo_401_RefreshSkipsBackoff(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	c := New(server.URL,
+		WithToken("any"),
+		WithAuthFailure(func() (string, error) {
+			return "new", nil
+		}),
+		WithMaxRetries(3), // would force 2s + 4s + 8s backoff if triggered
+	)
+
+	start := time.Now()
+	resp, err := c.Get(context.Background(), "/test")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	// After refresh + retry, server still 401s -> Do returns. Total wall
+	// time should be well under the 2s backoff threshold for attempt=1.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("auth-refresh path took %v, want < 500ms (no backoff expected)", elapsed)
 	}
 }
 

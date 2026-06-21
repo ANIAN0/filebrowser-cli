@@ -38,6 +38,16 @@ type Client struct {
 
 	// AuthHeader is the header name for authentication (default: "X-Auth" for FileBrowser).
 	AuthHeader string
+
+	// OnAuthFailure, when non-nil, is invoked on 401 Unauthorized responses so
+	// the caller can refresh the token and retry. Returning a new token
+	// triggers exactly one immediate retry of the request with that token;
+	// returning an error surfaces the refresh failure to the caller.
+	//
+	// Only one refresh happens per Do() call regardless of MaxRetries — auth
+	// failure and server overload are independent failure modes, and capping
+	// the refresh prevents a misconfigured hook from looping forever.
+	OnAuthFailure func() (newToken string, err error)
 }
 
 // Option configures the Client.
@@ -68,6 +78,13 @@ func WithAuthHeader(h string) Option {
 	return func(c *Client) { c.AuthHeader = h }
 }
 
+// WithAuthFailure registers a callback invoked on 401 Unauthorized responses.
+// See Client.OnAuthFailure for the contract; in short, returning a new token
+// triggers one immediate retry, returning an error surfaces the failure.
+func WithAuthFailure(fn func() (newToken string, err error)) Option {
+	return func(c *Client) { c.OnAuthFailure = fn }
+}
+
 // New creates a new Client with the given base URL and options.
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
@@ -95,17 +112,36 @@ func New(baseURL string, opts ...Option) *Client {
 	return c
 }
 
-// Do executes an HTTP request with retries on 5xx and network errors.
+// Do executes an HTTP request with retries on 5xx and network errors, and
+// with an optional one-shot auth refresh on 401 Unauthorized responses.
+//
+// Retry semantics:
+//   - 5xx and network-class failures: retried up to MaxRetries times with
+//     exponential backoff.
+//   - 401 (when OnAuthFailure is set): one refresh + immediate retry,
+//     decoupled from MaxRetries, with no backoff (token rejection is a fast
+//     path; the user already paid for a round trip).
+//
+// The 401 retry does not consume a MaxRetries slot and cannot loop, because
+// the authRetried latch caps it at one refresh per Do() call.
 func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// Set auth header if token is provided
+	// Set auth header once: req.WithContext returns a shallow *Request copy
+	// that shares the header map, so mutating req.Header (or c.Token) keeps
+	// every retry attempt in sync without re-setting per loop iteration.
 	if c.Token != "" {
 		req.Header.Set(c.AuthHeader, c.Token)
 	}
 
-	var lastErr error
+	var (
+		lastErr         error
+		authRetried     bool
+		authJustRetried bool
+	)
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
-		// Add backoff delay for retries
-		if attempt > 0 {
+		// Backoff applies to 5xx / network retries. The 401 refresh path
+		// sets authJustRetried and 'continue's, so the next iteration skips
+		// this wait — keeping token-rejection-recovery instant.
+		if attempt > 0 && !authJustRetried {
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if c.Verbose {
 				fmt.Fprintf(os.Stderr, "Retry %d/%d after %v backoff\n", attempt, c.MaxRetries, backoff)
@@ -116,6 +152,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 			case <-time.After(backoff):
 			}
 		}
+		authJustRetried = false
 
 		resp, err := c.HTTP.Do(req.WithContext(ctx))
 		if err != nil {
@@ -127,6 +164,23 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 				continue
 			}
 			return nil, err
+		}
+
+		// 401 Unauthorized: optional one-shot auth refresh + retry.
+		// Capped by authRetried (single refresh per Do) so a misconfigured
+		// refresh hook cannot loop forever; decoupled from MaxRetries so a
+		// tight MaxRetries cannot strip the chance to recover from expiry.
+		if resp.StatusCode == http.StatusUnauthorized && !authRetried && c.OnAuthFailure != nil {
+			resp.Body.Close()
+			newToken, aerr := c.OnAuthFailure()
+			if aerr != nil {
+				return nil, fmt.Errorf("auth refresh: %w", aerr)
+			}
+			c.Token = newToken
+			req.Header.Set(c.AuthHeader, newToken)
+			authRetried = true
+			authJustRetried = true
+			continue
 		}
 
 		// Success or client error - return immediately

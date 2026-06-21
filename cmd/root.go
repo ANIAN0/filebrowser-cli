@@ -145,20 +145,35 @@ func loadToken() string {
 	return token
 }
 
-// newAuthedClient builds an HTTP client carrying a usable auth token.
+// newAuthedClient builds an HTTP client carrying a usable auth token, and
+// wires up an OnAuthFailure hook so a mid-session 401 also triggers an
+// automatic re-login (instead of bubbling the 401 up to the caller).
 //
-// If a valid (non-expired) token is on disk it is used directly. If the token
-// has expired (or there is none) and the config carries username/password
-// credentials, it logs in again transparently, persists the new token, and
-// returns a client carrying it. If credentials are missing it returns an error
-// directing the user to run `filebrowser-cli login`.
+// Behaviour:
+//   - If a valid (non-expired) token is on disk it is used directly, no
+//     up-front login call.
+//   - If the token is missing or expired, reauth() is invoked once before
+//     returning, so the caller never sees a client without a working token.
+//   - If credentials are missing too, returns an error directing the user
+//     to run `filebrowser-cli login`.
 //
-// This eliminates the "token expired -> HTTP 401" failure mode reported in the
-// token-expiry bug, while degrading gracefully when auto re-login isn't possible.
+// Two recovery paths (up-front LoadToken failure, and mid-session 401) share
+// the same reauth() helper so the rules — credential requirement, verbose
+// logging, disk persistence, error wrapping — stay in lock-step. Without
+// sharing them, it is easy to fix one branch and forget the other (which is
+// exactly how the original 401 regression slipped in: LoadToken-only
+// detection missed server-side revocations).
 func newAuthedClient(ctx context.Context, cfg *fbconfig.Config) (*httpclient.Client, error) {
-	httpc := httpclient.New(cfg.InstanceURL,
+	// httpc is declared up-front so the OnAuthFailure closure (passed into
+	// httpclient.New below) can refer to it; Go's := would shadow the
+	// variable in the New() expression's scope, where httpc is not yet bound.
+	var httpc *httpclient.Client
+	httpc = httpclient.New(cfg.InstanceURL,
 		httpclient.WithTimeout(getTimeout()),
 		httpclient.WithVerbose(verbose),
+		httpclient.WithAuthFailure(func() (string, error) {
+			return reauth(ctx, cfg)
+		}),
 	)
 
 	token, err := fbconfig.LoadToken()
@@ -171,28 +186,53 @@ func newAuthedClient(ctx context.Context, cfg *fbconfig.Config) (*httpclient.Cli
 		return httpc, nil
 	}
 
-	// Token missing or expired -> attempt auto re-login with configured creds.
-	if cfg.Username == "" || cfg.Password == "" {
-		return nil, fmt.Errorf("not logged in or token expired; run `filebrowser-cli login` (or set username/password in config for automatic re-login)")
+	// Token missing or expired -> up-front auto re-login with configured creds.
+	newToken, rerr := reauth(ctx, cfg)
+	if rerr != nil {
+		return nil, rerr
 	}
+	httpc.Token = newToken
+	return httpc, nil
+}
 
+// reauth logs in again using the configured credentials and persists the new
+// token to disk. It is the single recovery path used both when LoadToken
+// reports expiry (up-front, before any command runs) and when the server
+// returns 401 mid-session (via the OnAuthFailure hook installed in
+// newAuthedClient).
+//
+// IMPORTANT: reauth builds its own throwaway httpclient — it does NOT reuse
+// the caller's. Reusing the caller's client would re-enter its OnAuthFailure
+// hook the moment Login's request itself 401s, deadlocking reauth inside its
+// own retry loop. The returned token is meant to be attached to the caller's
+// client for subsequent (non-login) requests.
+//
+// Returns a user-actionable error when credentials are not configured, so
+// the caller can surface "run `filebrowser-cli login`" without each callsite
+// re-deriving the message.
+func reauth(ctx context.Context, cfg *fbconfig.Config) (string, error) {
+	if cfg.Username == "" || cfg.Password == "" {
+		return "", fmt.Errorf("not logged in or token expired; run `filebrowser-cli login` (or set username/password in config for automatic re-login)")
+	}
 	if verbose {
 		fmt.Fprintln(os.Stderr, "token expired or missing, logging in...")
 	}
-
-	ac := &client.AuthClient{C: httpc}
-	newToken, lerr := ac.Login(ctx, cfg.Username, cfg.Password)
-	if lerr != nil {
-		return nil, fmt.Errorf("auto re-login: %w", lerr)
+	// Throwaway client: no OnAuthFailure (would loop), no pre-existing token
+	// (would leak the about-to-be-replaced credential into the login request).
+	fresh := httpclient.New(cfg.InstanceURL,
+		httpclient.WithTimeout(getTimeout()),
+		httpclient.WithVerbose(verbose),
+	)
+	ac := &client.AuthClient{C: fresh}
+	newToken, err := ac.Login(ctx, cfg.Username, cfg.Password)
+	if err != nil {
+		return "", fmt.Errorf("auto re-login: %w", err)
 	}
-
 	if serr := fbconfig.SaveToken(newToken); serr != nil {
-		// Non-fatal: the in-memory token is still set below.
+		// Non-fatal: the in-memory token (returned below) is still set.
 		fmt.Fprintf(os.Stderr, "warn: failed to save refreshed token: %v\n", serr)
 	}
-
-	httpc.Token = newToken
-	return httpc, nil
+	return newToken, nil
 }
 
 // loadConfig loads the configuration from file.

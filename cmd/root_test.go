@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,6 +223,95 @@ func TestNewAuthedClient_LoginFailure_PropagatesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auto re-login") {
 		t.Errorf("error %q should mention auto re-login", err.Error())
+	}
+}
+
+// TestNewAuthedClient_OnAuthFailureTriggersRelogin is the regression target
+// for the 401 bug: even when the on-disk token is "valid" by local checks
+// (e.g. no exp claim, within maxNoExpLifetime), the server can still reject
+// it. The OnAuthFailure hook installed by newAuthedClient must fire and
+// transparently re-login, returning a client whose Token field carries the
+// refreshed credential.
+func TestNewAuthedClient_OnAuthFailureTriggersRelogin(t *testing.T) {
+	withTempConfigDir(t)
+
+	// Local checks consider this token fine: no exp claim, just-saved. But
+	// the server will reject it with 401 — exactly the opaque-token case
+	// the fix targets.
+	opaque := fakeJWT(map[string]any{"sub": "admin"})
+	writeTokenFile(t, opaque, time.Time{})
+
+	var (
+		loginCalls int32
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/login" && r.Method == http.MethodPost {
+			atomic.AddInt32(&loginCalls, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`new-refreshed-token`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	cfg := minimalConfig(srv.URL)
+	cfg.Username = "admin"
+	cfg.Password = "secret"
+
+	c, err := newAuthedClient(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newAuthedClient: %v", err)
+	}
+	if c.OnAuthFailure == nil {
+		t.Fatal("OnAuthFailure should be wired up by newAuthedClient")
+	}
+	// newAuthedClient must hand the caller a client whose Token is the
+	// persisted (still-locally-valid) credential — the 401 rejection is
+	// the server's signal, not a pre-emptive local decision.
+	if c.Token != opaque {
+		t.Errorf("client.Token before refresh = %q, want %q (opaque)", c.Token, opaque)
+	}
+
+	// Trigger the hook the way httpclient.Do would after a 401.
+	newTok, aerr := c.OnAuthFailure()
+	if aerr != nil {
+		t.Fatalf("OnAuthFailure: %v", aerr)
+	}
+	if newTok != "new-refreshed-token" {
+		t.Errorf("refreshed token = %q, want %q", newTok, "new-refreshed-token")
+	}
+	if got := atomic.LoadInt32(&loginCalls); got != 1 {
+		t.Errorf("login calls = %d, want 1", got)
+	}
+}
+
+// TestNewAuthedClient_OnAuthFailureNoCreds_ErrorsFriendly covers the second
+// half of the recovery path: when the on-disk token is rejected AND the
+// config has no credentials for re-login, OnAuthFailure must return an error
+// that points the user at `filebrowser-cli login`.
+func TestNewAuthedClient_OnAuthFailureNoCreds_ErrorsFriendly(t *testing.T) {
+	withTempConfigDir(t)
+
+	opaque := fakeJWT(map[string]any{"sub": "admin"})
+	writeTokenFile(t, opaque, time.Time{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c, err := newAuthedClient(context.Background(), minimalConfig(srv.URL))
+	if err != nil {
+		t.Fatalf("newAuthedClient: %v", err)
+	}
+
+	_, aerr := c.OnAuthFailure()
+	if aerr == nil {
+		t.Fatal("OnAuthFailure with no creds: want error, got nil")
+	}
+	if !strings.Contains(aerr.Error(), "login") {
+		t.Errorf("error %q should hint at running `login`", aerr.Error())
 	}
 }
 

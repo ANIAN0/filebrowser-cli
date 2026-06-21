@@ -21,6 +21,20 @@ var ErrTokenExpired = errors.New("saved token has expired")
 // first authenticated request.
 const tokenExpirySkew = 30 * time.Second
 
+// maxNoExpLifetime caps how long we will keep trusting a saved token whose
+// JWT carries no "exp" claim. FileBrowser issues opaque session tokens in
+// some configurations; for those we cannot read a server-side expiry from
+// the token itself, yet the server still enforces a session timeout. Without
+// this bound we would happily keep sending a long-revoked token until the
+// server 401s, which is the very bug this constant exists to prevent.
+//
+// 24h is chosen to (a) be safely below the FileBrowser default session
+// timeout, (b) survive a typical workday so a user does not have to re-login
+// every few hours when auto re-login credentials are configured, and (c)
+// stay short enough that a stolen / leaked on-disk token has a finite
+// useful life even when the server-side TTL cannot be inspected.
+const maxNoExpLifetime = 24 * time.Hour
+
 // TokenData represents the saved authentication token.
 type TokenData struct {
 	// Token is the JWT token.
@@ -101,7 +115,7 @@ func LoadToken() (string, error) {
 		return "", nil // No token file
 	}
 
-	if isExpired(tokenData.Token, tokenData.ExpiresAt) {
+	if isExpired(tokenData.Token, tokenData.ExpiresAt, tokenData.SavedAt) {
 		return "", ErrTokenExpired
 	}
 	return tokenData.Token, nil
@@ -147,16 +161,25 @@ func loadTokenData() (*TokenData, error) {
 
 // isExpired reports whether the token should be considered expired.
 //
-// The JWT's live "exp" claim takes precedence over the persisted ExpiresAt
-// (the claim is authoritative; the persisted copy may be stale). A token with
-// no determinable expiry (both zero) is treated as never expiring, preserving
-// backward compatibility with tokens saved before expiry tracking existed.
-func isExpired(token string, persistedExpiry time.Time) bool {
+// Decision order:
+//  1. JWT "exp" claim (authoritative when present)
+//  2. Persisted ExpiresAt (fallback for tokens whose JWT carries no exp)
+//  3. SavedAt + maxNoExpLifetime (last-resort cap for opaque tokens)
+//
+// Step 3 is what closes the "infinite trust" gap that produced the 401
+// regression: when the server rejects a token we cannot locally inspect,
+// the only signal we have is when we ourselves saved it. Capping trust at
+// maxNoExpLifetime from that point forces a re-login before the server's
+// own (invisible) timeout fires.
+func isExpired(token string, persistedExpiry, savedAt time.Time) bool {
 	if exp := jwtExpiry(token); !exp.IsZero() {
 		return time.Now().After(exp.Add(-tokenExpirySkew))
 	}
 	if !persistedExpiry.IsZero() {
 		return time.Now().After(persistedExpiry.Add(-tokenExpirySkew))
+	}
+	if !savedAt.IsZero() {
+		return time.Now().After(savedAt.Add(maxNoExpLifetime))
 	}
 	return false
 }

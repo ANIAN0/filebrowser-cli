@@ -84,7 +84,7 @@ func TestJwtExpiry_MalformedToken(t *testing.T) {
 func TestIsExpired_NotExpired(t *testing.T) {
 	exp := time.Now().Add(1 * time.Hour).Unix()
 	token := fakeJWT(map[string]any{"exp": exp})
-	if isExpired(token, time.Time{}) {
+	if isExpired(token, time.Time{}, time.Time{}) {
 		t.Error("token with future exp should not be expired")
 	}
 }
@@ -93,7 +93,7 @@ func TestIsExpired_JustExpired(t *testing.T) {
 	// Token expired 60 seconds ago — well past the 30s skew.
 	exp := time.Now().Add(-60 * time.Second).Unix()
 	token := fakeJWT(map[string]any{"exp": exp})
-	if !isExpired(token, time.Time{}) {
+	if !isExpired(token, time.Time{}, time.Time{}) {
 		t.Error("token expired 60s ago should be expired")
 	}
 }
@@ -103,30 +103,62 @@ func TestIsExpired_WithinSkew(t *testing.T) {
 	// still be considered expired (we subtract skew from expiry).
 	exp := time.Now().Add(20 * time.Second).Unix()
 	token := fakeJWT(map[string]any{"exp": exp})
-	if !isExpired(token, time.Time{}) {
+	if !isExpired(token, time.Time{}, time.Time{}) {
 		t.Error("token expiring within skew should be considered expired")
 	}
 }
 
-func TestIsExpired_NoExp_NoPersisted(t *testing.T) {
-	// Both zero — treat as never expiring.
-	if isExpired("no-exp", time.Time{}) {
-		t.Error("token with no exp info should not be expired")
+func TestIsExpired_NoExp_NoPersisted_NoSavedAt(t *testing.T) {
+	// Token has no JWT exp, no persisted expiry, no SavedAt — fall through
+	// to the "treat as never expiring" branch (kept as the last resort so
+	// tokens saved by older tool versions that recorded neither field still
+	// work).
+	if isExpired("no-exp", time.Time{}, time.Time{}) {
+		t.Error("token with no expiry info and no SavedAt should not be expired")
 	}
 }
 
 func TestIsExpired_FallsBackToPersisted(t *testing.T) {
 	// Token has no JWT exp, but persisted ExpiresAt is in the past.
 	pastExpiry := time.Now().Add(-1 * time.Hour)
-	if !isExpired("no-jwt-exp", pastExpiry) {
+	if !isExpired("no-jwt-exp", pastExpiry, time.Time{}) {
 		t.Error("should fall back to persisted ExpiresAt and report expired")
 	}
 }
 
 func TestIsExpired_PersistedFuture(t *testing.T) {
 	futureExpiry := time.Now().Add(1 * time.Hour)
-	if isExpired("no-jwt-exp", futureExpiry) {
+	if isExpired("no-jwt-exp", futureExpiry, time.Time{}) {
 		t.Error("persisted future expiry should not be expired")
+	}
+}
+
+// TestIsExpired_NoExp_OpaqueWithinCap is the regression target for the
+// 401 bug: an opaque token (no JWT exp claim) saved recently should still
+// be trusted, but one saved longer than maxNoExpLifetime ago must be
+// considered expired so we re-login before the server 401s us.
+func TestIsExpired_NoExp_OpaqueWithinCap(t *testing.T) {
+	savedAt := time.Now().Add(-1 * time.Hour)
+	if isExpired("opaque-token", time.Time{}, savedAt) {
+		t.Error("opaque token saved 1h ago should still be within maxNoExpLifetime")
+	}
+}
+
+func TestIsExpired_NoExp_OpaquePastCap(t *testing.T) {
+	savedAt := time.Now().Add(-25 * time.Hour)
+	if !isExpired("opaque-token", time.Time{}, savedAt) {
+		t.Error("opaque token saved 25h ago should be expired (past maxNoExpLifetime)")
+	}
+}
+
+func TestIsExpired_JwtExpWinsOverSavedAt(t *testing.T) {
+	// When the JWT carries an exp, that takes precedence over SavedAt even
+	// if SavedAt alone would say "still fresh" — JWT is authoritative.
+	exp := time.Now().Add(2 * time.Hour).Unix()
+	token := fakeJWT(map[string]any{"exp": exp})
+	savedAt := time.Now().Add(-48 * time.Hour) // way past the cap
+	if isExpired(token, time.Time{}, savedAt) {
+		t.Error("JWT exp should win; future exp means token is not expired regardless of SavedAt")
 	}
 }
 

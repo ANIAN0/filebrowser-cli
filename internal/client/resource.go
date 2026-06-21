@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/ANIAN0/filebrowser-cli/internal/errcode"
 	"github.com/ANIAN0/filebrowser-cli/pkg/httpclient"
 )
 
@@ -38,18 +40,14 @@ type ResourceClient struct {
 
 // List returns the contents of a directory.
 func (r *ResourceClient) List(ctx context.Context, path string) (*Resource, error) {
-	if path == "" {
-		path = "/"
-	}
-	path = normalizeRemotePath(path)
-	resp, err := r.C.Get(ctx, "/api/resources"+path)
+	resp, err := r.C.Get(ctx, buildResourceURL("/api/resources", path, nil))
 	if err != nil {
 		return nil, fmt.Errorf("list request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list failed: HTTP %d", resp.StatusCode)
+		return nil, &errcode.StatusError{Op: "list", Code: resp.StatusCode, Path: path}
 	}
 
 	var res Resource
@@ -61,18 +59,16 @@ func (r *ResourceClient) List(ctx context.Context, path string) (*Resource, erro
 
 // Info returns detailed information about a resource.
 func (r *ResourceClient) Info(ctx context.Context, path string) (*Resource, error) {
-	if path == "" {
-		path = "/"
-	}
-	path = normalizeRemotePath(path)
-	resp, err := r.C.Get(ctx, "/api/resources"+path+"?checksum=sha256")
+	q := url.Values{}
+	q.Set("checksum", "sha256")
+	resp, err := r.C.Get(ctx, buildResourceURL("/api/resources", path, q))
 	if err != nil {
 		return nil, fmt.Errorf("info request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("info failed: HTTP %d", resp.StatusCode)
+		return nil, &errcode.StatusError{Op: "info", Code: resp.StatusCode, Path: path}
 	}
 
 	var res Resource
@@ -85,19 +81,21 @@ func (r *ResourceClient) Info(ctx context.Context, path string) (*Resource, erro
 // Upload uploads a local file to the remote path.
 func (r *ResourceClient) Upload(ctx context.Context, localPath, remotePath string, override bool) error {
 	// localPath is a filesystem path and MUST NOT be normalized.
-	remotePath = normalizeRemotePath(remotePath)
 	f, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open local file: %w", err)
 	}
 	defer f.Close()
 
-	overrideStr := "false"
+	q := url.Values{}
 	if override {
-		overrideStr = "true"
+		q.Set("override", "true")
+	} else {
+		q.Set("override", "false")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", r.C.BaseURL+"/api/resources"+remotePath+"?override="+overrideStr, f)
+	u := buildResourceURL("/api/resources", remotePath, q)
+	req, err := http.NewRequestWithContext(ctx, "POST", r.C.BaseURL+u, f)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -110,27 +108,27 @@ func (r *ResourceClient) Upload(ctx context.Context, localPath, remotePath strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("upload failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "upload", Code: resp.StatusCode, Path: remotePath}
 	}
 	return nil
 }
 
 // Download downloads a remote file to a local path.
 func (r *ResourceClient) Download(ctx context.Context, remotePath, localPath string) error {
-	// localPath is a filesystem path and MUST NOT be normalized.
-	remotePath = normalizeRemotePath(remotePath)
 	if localPath == "" {
-		localPath = filepath.Base(remotePath)
+		// Use POSIX path.Base (not filepath.Base) since remotePath is always
+		// a POSIX-style remote path; on Windows filepath.Base misinterprets it.
+		localPath = path.Base(remotePath)
 	}
 
-	resp, err := r.C.Get(ctx, "/api/raw"+remotePath)
+	resp, err := r.C.Get(ctx, buildResourceURL("/api/raw", remotePath, nil))
 	if err != nil {
 		return fmt.Errorf("download request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "download", Code: resp.StatusCode, Path: remotePath}
 	}
 
 	// Create parent directory if needed
@@ -152,26 +150,27 @@ func (r *ResourceClient) Download(ctx context.Context, remotePath, localPath str
 
 // Mkdir creates a directory at the remote path.
 func (r *ResourceClient) Mkdir(ctx context.Context, path string) error {
-	path = normalizeRemotePath(path)
+	// The FileBrowser server requires mkdir URLs to end in "/"; force it here
+	// so callers don't have to remember.
 	if !strings.HasSuffix(path, "/") {
 		path += "/"
 	}
-	resp, err := r.C.Post(ctx, "/api/resources"+path, "", nil)
+	resp, err := r.C.Post(ctx, buildResourceURL("/api/resources", path, nil), "", nil)
 	if err != nil {
 		return fmt.Errorf("mkdir request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("mkdir failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "mkdir", Code: resp.StatusCode, Path: path}
 	}
 	return nil
 }
 
 // Remove deletes a resource at the remote path.
 func (r *ResourceClient) Remove(ctx context.Context, path string) error {
-	path = normalizeRemotePath(path)
-	req, err := http.NewRequestWithContext(ctx, "DELETE", r.C.BaseURL+"/api/resources"+path, nil)
+	u := buildResourceURL("/api/resources", path, nil)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", r.C.BaseURL+u, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -183,16 +182,17 @@ func (r *ResourceClient) Remove(ctx context.Context, path string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("remove failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "remove", Code: resp.StatusCode, Path: path}
 	}
 	return nil
 }
 
 // Move moves or renames a resource.
 func (r *ResourceClient) Move(ctx context.Context, src, dst string) error {
-	src = normalizeRemotePath(src)
-	dst = normalizeRemotePath(dst)
-	u := fmt.Sprintf("/api/resources%s?action=rename&destination=%s", src, url.QueryEscape(dst))
+	q := url.Values{}
+	q.Set("action", "rename")
+	q.Set("destination", dst)
+	u := buildResourceURL("/api/resources", src, q)
 	req, err := http.NewRequestWithContext(ctx, "PATCH", r.C.BaseURL+u, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -205,16 +205,17 @@ func (r *ResourceClient) Move(ctx context.Context, src, dst string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("move failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "move", Code: resp.StatusCode, Path: src}
 	}
 	return nil
 }
 
 // Copy copies a resource.
 func (r *ResourceClient) Copy(ctx context.Context, src, dst string) error {
-	src = normalizeRemotePath(src)
-	dst = normalizeRemotePath(dst)
-	u := fmt.Sprintf("/api/resources%s?action=copy&destination=%s", src, url.QueryEscape(dst))
+	q := url.Values{}
+	q.Set("action", "copy")
+	q.Set("destination", dst)
+	u := buildResourceURL("/api/resources", src, q)
 	req, err := http.NewRequestWithContext(ctx, "PATCH", r.C.BaseURL+u, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -227,7 +228,7 @@ func (r *ResourceClient) Copy(ctx context.Context, src, dst string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("copy failed: HTTP %d", resp.StatusCode)
+		return &errcode.StatusError{Op: "copy", Code: resp.StatusCode, Path: src}
 	}
 	return nil
 }
@@ -235,19 +236,18 @@ func (r *ResourceClient) Copy(ctx context.Context, src, dst string) error {
 // Preview returns an image preview of a resource.
 // size must be "thumb" (256x256) or "big" (1080x1080).
 func (r *ResourceClient) Preview(ctx context.Context, path, size string) ([]byte, error) {
-	path = normalizeRemotePath(path)
 	if size != "thumb" && size != "big" {
 		return nil, fmt.Errorf("size must be 'thumb' or 'big', got %q", size)
 	}
 
-	resp, err := r.C.Get(ctx, fmt.Sprintf("/api/preview/%s%s", size, path))
+	resp, err := r.C.Get(ctx, buildResourceURL("/api/preview/"+size, path, nil))
 	if err != nil {
 		return nil, fmt.Errorf("preview request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("preview failed: HTTP %d", resp.StatusCode)
+		return nil, &errcode.StatusError{Op: "preview", Code: resp.StatusCode, Path: path}
 	}
 
 	return io.ReadAll(resp.Body)

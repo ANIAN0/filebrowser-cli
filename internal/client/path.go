@@ -77,17 +77,25 @@ func normalizeRemotePath(p string) string {
 //
 // MSYSTEM_PREFIX points at something like "C:/Program Files/Git/mingw64" (Git
 // for Windows) or "/mingw64" (native MSYS2); its parent directory is the MSYS
-// root. We fall back to MSYSTEM as a last resort only when it is an absolute
-// Windows path, since MSYSTEM alone (e.g. "MINGW64") is just a label, not a
-// path.
+// root. We fall back to EXEPATH (set by Git for Windows to "<root>/bin") when
+// MSYSTEM_PREFIX is empty or unusable, which happens in non-interactive shells
+// (e.g. `bash -c "..."` spawned by pi / Claude Code / CI) where the MSYS login
+// profile is not sourced.
 func msysRoot() string {
 	if os.Getenv("MSYSTEM") == "" {
 		return ""
 	}
 
 	if prefix := os.Getenv("MSYSTEM_PREFIX"); prefix != "" {
-		abs := toWindowsAbs(prefix)
-		if abs != "" {
+		if abs := toWindowsAbs(prefix); abs != "" {
+			return filepath.Dir(abs)
+		}
+	}
+
+	// Fallback: Git for Windows sets EXEPATH="<root>\bin" even in non-interactive
+	// shells, while MSYSTEM_PREFIX is empty. Take the parent to get the MSYS root.
+	if exePath := os.Getenv("EXEPATH"); exePath != "" {
+		if abs := toWindowsAbs(exePath); abs != "" {
 			return filepath.Dir(abs)
 		}
 	}

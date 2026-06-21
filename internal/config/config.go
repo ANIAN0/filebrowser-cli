@@ -15,19 +15,19 @@ type Config struct {
 	sharedconfig.Config `yaml:",inline"`
 
 	// InstanceURL is the FileBrowser server URL (e.g., "http://localhost:8080").
-	InstanceURL string `yaml:"instance_url"`
+	InstanceURL string `yaml:"instance_url" json:"instance_url"`
 
 	// Username is the FileBrowser username.
-	Username string `yaml:"username"`
+	Username string `yaml:"username" json:"username"`
 
 	// Password is the FileBrowser password (supports ${ENV_VAR} interpolation).
-	Password string `yaml:"password"`
+	Password string `yaml:"password" json:"password"`
 
 	// DefaultExpires is the default expiration time for shares.
-	DefaultExpires int `yaml:"default_expires"`
+	DefaultExpires int `yaml:"default_expires" json:"default_expires"`
 
 	// DefaultUnit is the default time unit for expiration (s, m, h, d).
-	DefaultUnit string `yaml:"default_unit"`
+	DefaultUnit string `yaml:"default_unit" json:"default_unit"`
 }
 
 // LoadFromBytes parses a YAML config into c.

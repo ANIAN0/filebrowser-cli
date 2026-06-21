@@ -269,6 +269,30 @@ make test
 make clean
 ```
 
+## 路径参数语义
+
+位置参数为**远端 POSIX 路径**，约定：
+
+- 必须以 `/` 开头（表示远端 server 上的绝对路径）。
+- 包含空格、`#`、`?`、`%` 等字符时会自动按 URL 段编码。
+- 在 Windows + Git for Windows（Git Bash）环境下，如果 argv 中的 `/` 被 shell 在传递前改写为 MSYS 安装根（例如 `C:/Program Files/Git/`），CLI 内部会自动反向还原。这一处理在交互式 shell 与非交互式 `bash -c` 环境都生效。
+- `download <remote> [local]`：本地参数缺省时取远端路径的 basename（POSIX `path.Base` 语义，跨平台一致）。
+
+## config 字段契约
+
+`config.yaml` 与 `config show --json` 使用统一的 snake_case 字段名（YAML key / JSON key / Go 字段名一一对应）：
+
+| YAML | JSON |
+|---|---|
+| `instance_url` | `instance_url` |
+| `username` | `username` |
+| `password` | `password` |
+| `default_expires` | `default_expires` |
+| `default_unit` | `default_unit` |
+| `version` | `version` |
+
+`config show` 默认 `--redact=true`，`password` 输出为 `***`；显式 `--redact=false` 输出真实值（仅诊断场景使用）。
+
 ## 许可证
 
 MIT License

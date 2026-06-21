@@ -49,9 +49,12 @@ func TestNormalizeRemotePath_NoMsysEnv_Passthrough(t *testing.T) {
 }
 
 func TestNormalizeRemotePath_NoPrefix_Passthrough(t *testing.T) {
-	// MSYSTEM set but MSYSTEM_PREFIX empty -> cannot derive root, pass through.
+	// MSYSTEM set but MSYSTEM_PREFIX and EXEPATH both empty -> cannot derive root,
+	// pass through (defensive: with EXEPATH fallback added, must keep this
+	// contract so unknown environments stay inert).
 	t.Setenv("MSYSTEM", "MINGW64")
 	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
 
 	in := "C:/Program Files/Git/foo"
 	if got := normalizeRemotePath(in); got != in {
@@ -130,5 +133,84 @@ func TestNormalizeRemotePath_CaseInsensitiveRootMatch(t *testing.T) {
 	in := `C:/PROGRAM FILES/Git/foo`
 	if got := normalizeRemotePath(in); got != "/foo" {
 		t.Errorf("normalizeRemotePath(%q) = %q, want \"/foo\" (case-insensitive)", in, got)
+	}
+}
+
+// TestMsysRoot_ExepathFallback covers the non-interactive bash case (pi /
+// Claude Code / CI): MSYSTEM is set but MSYSTEM_PREFIX is empty because the
+// MSYS login profile is not sourced. Git for Windows still exports
+// EXEPATH="<root>\bin", so msysRoot must derive the install root from it.
+func TestMsysRoot_ExepathFallback(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", `C:\Program Files\Git\bin`)
+
+	if got := msysRoot(); got != `C:\Program Files\Git` {
+		t.Errorf("msysRoot() = %q, want %q", got, `C:\Program Files\Git`)
+	}
+}
+
+func TestNormalizeRemotePath_ExepathMangled_Root(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", `C:\Program Files\Git\bin`)
+
+	// This is the exact shape of the 404 bug: `/` mangled to MSYS install root.
+	if got := normalizeRemotePath(`C:\Program Files\Git`); got != "/" {
+		t.Errorf("normalizeRemotePath(<root>) = %q, want \"/\"", got)
+	}
+	if got := normalizeRemotePath(`C:\Program Files\Git\`); got != "/" {
+		t.Errorf("normalizeRemotePath(<root>\\) = %q, want \"/\"", got)
+	}
+}
+
+func TestNormalizeRemotePath_ExepathMangled_Subpaths(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", `C:\Program Files\Git\bin`)
+
+	cases := map[string]string{
+		`C:\Program Files\Git\foo`:        "/foo",
+		`C:/Program Files/Git/foo/bar`:    "/foo/bar",
+		`C:/Program Files/Git/foo/`:       "/foo",
+		`C:/Program Files/Git/foo/../bar`: "/bar",
+	}
+	for in, want := range cases {
+		if got := normalizeRemotePath(in); got != want {
+			t.Errorf("normalizeRemotePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Negative-case companions to TestMsysRoot_ExepathFallback: pin the
+// "conservative no-op" contract. When MSYS is absent OR when both
+// MSYSTEM_PREFIX and EXEPATH are empty, msysRoot must return "" so that
+// normalizeRemotePath leaves input untouched. This guards against future
+// "helpful" fallbacks that would silently rewrite legitimate paths.
+
+// TestMsysRoot_NoMsystem_ReturnsEmpty: outside any MSYS shell (Linux, macOS,
+// or Windows cmd.exe), MSYSTEM is unset, so msysRoot must short-circuit.
+func TestMsysRoot_NoMsystem_ReturnsEmpty(t *testing.T) {
+	t.Setenv("MSYSTEM", "")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
+
+	if got := msysRoot(); got != "" {
+		t.Errorf("msysRoot() with no MSYS env = %q, want \"\"", got)
+	}
+}
+
+// TestMsysRoot_MsystemSetNoRootEnv_ReturnsEmpty: MSYSTEM is set (so we know
+// we are in MSYS) but neither MSYSTEM_PREFIX nor EXEPATH is exported. This
+// can happen on minimal MSYS2 installs or sandboxed CI. We cannot safely
+// derive the root, so we must return "" and let normalizeRemotePath pass
+// the input through unchanged.
+func TestMsysRoot_MsystemSetNoRootEnv_ReturnsEmpty(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
+
+	if got := msysRoot(); got != "" {
+		t.Errorf("msysRoot() with MSYSTEM but no root envs = %q, want \"\"", got)
 	}
 }

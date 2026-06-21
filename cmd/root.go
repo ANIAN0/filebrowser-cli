@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ANIAN0/filebrowser-cli/internal/client"
 	fbconfig "github.com/ANIAN0/filebrowser-cli/internal/config"
+	"github.com/ANIAN0/filebrowser-cli/internal/errcode"
 	sharedconfig "github.com/ANIAN0/filebrowser-cli/pkg/config"
 	"github.com/ANIAN0/filebrowser-cli/pkg/httpclient"
 	"github.com/ANIAN0/filebrowser-cli/pkg/output"
@@ -70,8 +68,9 @@ func Execute() int {
 	return output.ExitSuccess
 }
 
-var httpStatusPattern = regexp.MustCompile(`HTTP ([0-9]{3})`)
-
+// classifyExitCode routes a command error to a stable exit code using
+// errcode sentinels and *errcode.StatusError, never error-message strings.
+// This keeps the exit-code contract independent of message wording.
 func classifyExitCode(err error) int {
 	if err == nil {
 		return output.ExitSuccess
@@ -86,21 +85,33 @@ func classifyExitCode(err error) int {
 		return output.ExitNetwork
 	}
 
-	msg := err.Error()
-	if strings.Contains(msg, "load config:") ||
-		strings.Contains(msg, "config") ||
-		strings.Contains(msg, "env var(s) not set") {
+	// Config errors: sentinel-based, message-independent.
+	if errors.Is(err, errcode.ErrConfigLoad) || errors.Is(err, errcode.ErrConfigInvalid) {
 		return output.ExitConfig
 	}
 
-	if match := httpStatusPattern.FindStringSubmatch(msg); len(match) == 2 {
-		status, convErr := strconv.Atoi(match[1])
-		if convErr == nil {
-			if status >= 500 && status < 600 {
-				return output.ExitServerError
-			}
-			return output.ExitClientError
+	// Status errors: routed by HTTP code via *errcode.StatusError.Is/As.
+	var statusErr *errcode.StatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.Code >= 500 && statusErr.Code < 600 {
+			return output.ExitServerError
 		}
+		return output.ExitClientError
+	}
+
+	// Loose server/client categories: catch wrapping that didn't promote to StatusError.
+	//
+	// Currently no caller wraps ErrServer/ErrClient directly — 4xx/5xx
+	// always come through *StatusError above. These branches are kept
+	// intentionally as a future-proofing entry point: if a future code path
+	// does `fmt.Errorf("...: %w", errcode.ErrServer)` without promoting to
+	// StatusError, classifyExitCode still routes it correctly without needing
+	// a code change here.
+	if errors.Is(err, errcode.ErrServer) {
+		return output.ExitServerError
+	}
+	if errors.Is(err, errcode.ErrClient) {
+		return output.ExitClientError
 	}
 
 	return output.ExitClientError
@@ -211,16 +222,16 @@ func loadConfig() (*fbconfig.Config, error) {
 	// Load shared config
 	result, err := sharedconfig.LoadConfig("filebrowser-cli", args, env, binaryPath, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load config: %w: %w", errcode.ErrConfigLoad, err)
 	}
 
 	cfg, err := fbconfig.LoadFromBytes(result.Data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse config: %w: %w", errcode.ErrConfigLoad, err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate config: %w: %w", errcode.ErrConfigInvalid, err)
 	}
 
 	return cfg, nil

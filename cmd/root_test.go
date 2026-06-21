@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ANIAN0/filebrowser-cli/internal/errcode"
 	fbconfig "github.com/ANIAN0/filebrowser-cli/internal/config"
+	"github.com/ANIAN0/filebrowser-cli/pkg/output"
 )
 
 // fakeJWT builds a minimal JWT-like string (header.payload.signature) with
@@ -217,5 +222,54 @@ func TestNewAuthedClient_LoginFailure_PropagatesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auto re-login") {
 		t.Errorf("error %q should mention auto re-login", err.Error())
+	}
+}
+
+// classifyExitCode must route by sentinel / StatusError, NEVER by string match.
+// These tests pin that contract so message rewording (i18n, wording tweaks)
+// cannot silently change exit codes.
+
+func TestClassifyExitCode_StatusError5xx(t *testing.T) {
+	err := &errcode.StatusError{Op: "list", Code: 500}
+	if got := classifyExitCode(err); got != output.ExitServerError {
+		t.Errorf("classifyExitCode(500) = %d, want ExitServerError=%d", got, output.ExitServerError)
+	}
+}
+
+func TestClassifyExitCode_StatusError4xx(t *testing.T) {
+	err := &errcode.StatusError{Op: "list", Code: 404}
+	if got := classifyExitCode(err); got != output.ExitClientError {
+		t.Errorf("classifyExitCode(404) = %d, want ExitClientError=%d", got, output.ExitClientError)
+	}
+}
+
+func TestClassifyExitCode_ConfigSentinel(t *testing.T) {
+	err := fmt.Errorf("load config: %w", errcode.ErrConfigLoad)
+	if got := classifyExitCode(err); got != output.ExitConfig {
+		t.Errorf("classifyExitCode(ErrConfigLoad) = %d, want ExitConfig=%d", got, output.ExitConfig)
+	}
+}
+
+func TestClassifyExitCode_NetworkError(t *testing.T) {
+	err := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	if got := classifyExitCode(err); got != output.ExitNetwork {
+		t.Errorf("classifyExitCode(net.OpError) = %d, want ExitNetwork=%d", got, output.ExitNetwork)
+	}
+}
+
+// Regression: changing the error message text must NOT change the exit code.
+// This is the whole point of moving away from strings.Contains.
+func TestClassifyExitCode_MessageChangePreservesCode(t *testing.T) {
+	// Original-style message: "list failed: HTTP 404"  → ExitClientError
+	orig := &errcode.StatusError{Op: "list", Code: 404}
+	// Hypothetical i18n rewrite
+	i18n := &errcode.StatusError{Op: "列表", Code: 404}
+	// Wrapped differently
+	wrapped := fmt.Errorf("执行失败: %w", orig)
+
+	for label, e := range map[string]error{"orig": orig, "i18n": i18n, "wrapped": wrapped} {
+		if got := classifyExitCode(e); got != output.ExitClientError {
+			t.Errorf("[%s] classifyExitCode = %d, want ExitClientError=%d", label, got, output.ExitClientError)
+		}
 	}
 }

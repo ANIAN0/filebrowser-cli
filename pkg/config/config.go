@@ -19,7 +19,7 @@ package config
 //	password: "${FB_PASSWORD}"
 type Config struct {
 	// Version is the YAML schema version. Must be 1.
-	Version int `yaml:"version"`
+	Version int `yaml:"version" json:"version"`
 }
 
 // Version1 is the supported schema version.

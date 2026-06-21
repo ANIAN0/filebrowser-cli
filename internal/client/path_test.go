@@ -1,6 +1,7 @@
 package client
 
 import (
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -49,17 +50,30 @@ func TestNormalizeRemotePath_NoMsysEnv_Passthrough(t *testing.T) {
 }
 
 func TestNormalizeRemotePath_NoPrefix_Passthrough(t *testing.T) {
-	// MSYSTEM set but MSYSTEM_PREFIX and EXEPATH both empty -> cannot derive root,
-	// pass through (defensive: with EXEPATH fallback added, must keep this
-	// contract so unknown environments stay inert).
+	// MSYSTEM set but MSYSTEM_PREFIX and EXEPATH both empty AND no default
+	// install-root probes match -> cannot derive any root, must pass through.
+	// We stub msysDefaultRoots so the test is hermetic (doesn't depend on
+	// whether C:/Program Files/Git exists on the developer's machine).
 	t.Setenv("MSYSTEM", "MINGW64")
 	t.Setenv("MSYSTEM_PREFIX", "")
 	t.Setenv("EXEPATH", "")
+	stubMsysDefaultRoots(t, nil)
 
 	in := "C:/Program Files/Git/foo"
 	if got := normalizeRemotePath(in); got != in {
-		t.Errorf("normalizeRemotePath(%q) = %q, want %q (no prefix)", in, got, in)
+		t.Errorf("normalizeRemotePath(%q) = %q, want %q (no prefix, no default)", in, got, in)
 	}
+}
+
+// stubMsysDefaultRoots swaps the package-level msysDefaultRoots hook for
+// the duration of a test, restoring the production value on cleanup. Tests
+// use this to make normalizeRemotePath hermetic — independent of whether
+// a real Git-for-Windows install happens to exist on the developer's box.
+func stubMsysDefaultRoots(t *testing.T, roots []string) {
+	t.Helper()
+	orig := msysDefaultRoots
+	msysDefaultRoots = func() []string { return roots }
+	t.Cleanup(func() { msysDefaultRoots = orig })
 }
 
 func TestNormalizeRemotePath_EmptyString(t *testing.T) {
@@ -212,5 +226,84 @@ func TestMsysRoot_MsystemSetNoRootEnv_ReturnsEmpty(t *testing.T) {
 
 	if got := msysRoot(); got != "" {
 		t.Errorf("msysRoot() with MSYSTEM but no root envs = %q, want \"\"", got)
+	}
+}
+
+// TestNormalizeRemotePath_NoEnvRoot_DefaultHit covers the regression this
+// fix targets: MSYSTEM_PREFIX and EXEPATH are both empty, yet we still
+// recognise the MSYS-mangled root via default-install-location probing.
+// On a Windows machine where C:/Program Files/Git exists, / -> that root
+// must be reversed back to "/". The stub makes the test independent of
+// whether the developer happens to have Git for Windows installed.
+func TestNormalizeRemotePath_NoEnvRoot_DefaultHit(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
+
+	fakeRoot := t.TempDir() // arbitrary but stable per-test path
+	t.Setenv("ProgramFiles", filepath.Dir(fakeRoot))
+	t.Setenv("ProgramFiles(x86)", filepath.Dir(fakeRoot))
+	// The production defaultMsysRoots probes "C:/Program Files/Git" etc.,
+	// not the temp dir — exercise the candidates list explicitly via the
+	// stub so the assertion is about the prefix-matching logic, not OS luck.
+	stubMsysDefaultRoots(t, []string{fakeRoot})
+
+	cases := map[string]string{
+		fakeRoot:          "/",
+		fakeRoot + "/":     "/",
+		fakeRoot + `\` + "/": "/",
+		fakeRoot + "/foo":  "/foo",
+		fakeRoot + "/x/y":  "/x/y",
+	}
+	for in, want := range cases {
+		if got := normalizeRemotePath(in); got != want {
+			t.Errorf("normalizeRemotePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestNormalizeRemotePath_NoEnvRoot_DefaultMiss confirms that when neither
+// env-derived roots nor default candidates match, the path is forwarded
+// unchanged. This is the safety net that keeps the fix from silently
+// rewriting legitimate Windows paths in unrelated scenarios.
+func TestNormalizeRemotePath_NoEnvRoot_DefaultMiss(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
+	stubMsysDefaultRoots(t, []string{`C:\somewhere\unrelated`})
+
+	in := `D:/Users/someone/file.txt`
+	if got := normalizeRemotePath(in); got != in {
+		t.Errorf("normalizeRemotePath(%q) = %q, want %q (no root match)", in, got, in)
+	}
+}
+
+// TestMsysRootCandidates_EnvRootBeatsDefault pins the priority order:
+// when MSYSTEM_PREFIX/EXEPATH successfully derive a root, that root wins
+// and default probes are not consulted (preventing stale defaults from
+// shadowing the live env-derived value).
+func TestMsysRootCandidates_EnvRootBeatsDefault(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", `C:\env-root\mingw64`)
+	t.Setenv("EXEPATH", "")
+	stubMsysDefaultRoots(t, []string{`C:\default-root`})
+
+	got := msysRootCandidates()
+	if len(got) != 1 || got[0] != `C:\env-root` {
+		t.Errorf("msysRootCandidates() = %v, want only [C:\\env-root]", got)
+	}
+}
+
+// TestMsysRootCandidates_NoEnv_FallsBackToDefault confirms that when no
+// env-derived root is available, the default-roots hook is consulted.
+func TestMsysRootCandidates_NoEnv_FallsBackToDefault(t *testing.T) {
+	t.Setenv("MSYSTEM", "MINGW64")
+	t.Setenv("MSYSTEM_PREFIX", "")
+	t.Setenv("EXEPATH", "")
+	stubMsysDefaultRoots(t, []string{`C:\fallback-root`})
+
+	got := msysRootCandidates()
+	if len(got) != 1 || got[0] != `C:\fallback-root` {
+		t.Errorf("msysRootCandidates() = %v, want [C:\\fallback-root]", got)
 	}
 }
